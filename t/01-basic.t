@@ -9,19 +9,20 @@ sub fail {my $self = shift;die "Fail from $self->{some}: @_";}
 package main;
 
 use lib::abs "../lib";
-use Test::NoWarnings;
-use Test::More tests => 8+1;
+use Test::NoWarnings ();
+use Test::More;
 use AnyEvent 5;
 use AnyEvent::Worker;
 use AnyEvent::Util(); 
 
 my $worker1 = AnyEvent::Worker->new( [ t::ActualWorker => some => 'object' ] );
 my $worker2 = AnyEvent::Worker->new( sub { return "Cb 1 @_"; } );
-my $worker3 = AnyEvent::Worker->new( sub { die    "Cb 2 @_";  } );
-$SIG{ALRM} = sub { print STDERR "# Alarm clock!\n"; exit 255; };
-alarm 3;
+my $worker3 = AnyEvent::Worker->new( sub { die    "Cb 2 @_"; } );
 
 my $cv = AE::cv;
+
+$SIG{ALRM} = sub { fail("Alarm clock, timeout!"); $cv->send };
+alarm 3;
 
 $cv->begin;
 $worker1->do( test => "SomeData" , sub {
@@ -56,3 +57,7 @@ $worker3->do( "FailData" , sub {
 });
 
 $cv->recv;
+
+Test::NoWarnings::had_no_warnings;
+
+done_testing( 9 );
