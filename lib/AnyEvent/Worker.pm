@@ -6,15 +6,7 @@ use strict;
 }x;
 =head1 NAME
 
-AnyEvent::Worker - The great new AnyEvent::Worker!
-
-=head1 VERSION
-
-Version 0.01
-
-=cut
-
-our $VERSION = '0.01';
+AnyEvent::Worker - Manage blocking task in external process
 
 =head1 SYNOPSIS
 
@@ -134,9 +126,6 @@ sub new {
 	
 	my ($client, $server) = AnyEvent::Util::portable_socketpair
 		or croak "unable to create Anyevent::DBI communications pipe: $!";
-	
-	my %dbi_args = %arg;
-	delete @dbi_args{qw(on_connect on_error timeout exec_server)};
 	
 	my $self = bless \%arg, $class;
 	$self->{fh} = $client;
