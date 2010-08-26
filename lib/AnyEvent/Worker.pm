@@ -1,9 +1,11 @@
 package AnyEvent::Worker;
 
+use 5.006;
 use common::sense 2;m{
 use warnings;
 use strict;
 }x;
+
 =head1 NAME
 
 AnyEvent::Worker - Manage blocking task in external process
@@ -15,6 +17,11 @@ AnyEvent::Worker - Manage blocking task in external process
     
     my $worker1 = AnyEvent::Worker->new( [ 'Actual::Worker::Class' => @init_args ] );
     my $worker2 = AnyEvent::Worker->new( sub { return "Cb 1 @_"; } );
+    my $worker3 = AnyEvent::Worker->new( {
+        class   => 'Actual::Worker::Class2',
+        new     => 'create', # alternative constructor
+        args    => [qw(arg1 arg2)],
+    } );
     
     # Invoke method `test' on Actual::Worker::Class with arguments @args
     $worker1->do( test => @args , sub {
@@ -27,6 +34,36 @@ AnyEvent::Worker - Manage blocking task in external process
         return warn "Request died: $@" if $@;
         warn "Received response: @_";
     });
+
+=head1 CONSTRUCTOR
+
+=head2 new $cb->($req), %args
+
+Simple stateless worker. On any C<do> a sub sill be invoked with C<do> arguments
+
+=head2 new [ Class => @new_args ], %args
+
+Stateful, object-based worker. After fork, Class will we C<use>d, then instantiated with new(@new_args).
+
+First argument to C<do> will be interpreted as object method, rest -- as method arguments.
+
+=head2 new { class => 'Class', args => \@new_args, new => 'constructor_method' }, %args
+
+Same as previous, but allow to pass optional constructor name in C<new> arg
+
+=head2 $args{on_error} = $cb->($worker,$error,$fatal,$file,$line)
+
+When an unexpected error occurs (for ex: child process exited or killed) C<on_error> callback will be invoked
+
+=head1 METHODS
+
+=head2 do @args, $cb->($res)
+
+Only for stateless worker.
+
+=head2 do method => @args, $cb->($res)
+
+Only for stateful worker.
 
 =cut
 
@@ -42,7 +79,7 @@ use Errno ();
 use Fcntl ();
 use POSIX ();
 
-our $VERSION = '0.01';
+our $VERSION = '0.04';
 our $FD_MAX = eval { POSIX::sysconf (&POSIX::_SC_OPEN_MAX) - 1 } || 1023;
 
 # Almost fully derived from AnyEvent::DBI
@@ -78,6 +115,7 @@ sub serve_fh($$) {
 				
 				my $req = Storable::thaw substr $rbuf, 4;
 				substr $rbuf, 0, $len + 4, ""; # remove length + request
+				local $@;
 				my $wbuf = eval {
 					++$N;
 					if (ref $WORKER eq 'CODE') {
@@ -90,14 +128,14 @@ sub serve_fh($$) {
 						pack "L/a*", Storable::freeze [ 1, $WORKER->$method(@$req) ];
 					}
 				};
+				# warn if $@;
 				$0 = "$O : idle";
 				$wbuf = pack "L/a*", Storable::freeze [ undef, ref $@ ? ("$@->[0]", $@->[1]) : ("$@", 0) ]
 					if $@;
 				
 				#warn "<< response";
 				for (my $ofs = 0; $ofs < length $wbuf; ) {
-					$ofs += (my $wr = syswrite $fh, substr $wbuf, $ofs
-									or die "unable to write results");
+					$ofs += (my $wr = syswrite $fh, substr $wbuf, $ofs or die "unable to write results");
 				}
 			}
 		}
@@ -125,7 +163,7 @@ sub new {
 	my ($class, $cb, %arg) = @_;
 	
 	my ($client, $server) = AnyEvent::Util::portable_socketpair
-		or croak "unable to create Anyevent::DBI communications pipe: $!";
+		or croak "unable to create Anyevent::Worker communications pipe: $!";
 	
 	my $self = bless \%arg, $class;
 	$self->{fh} = $client;
@@ -164,11 +202,11 @@ sub new {
 						$req->[0](@$res);
 					} else {
 						my $cb = shift @$req;
-						local $@ = $res->[1];
-						$@ =~ s{\n$}{};
-						$cb->($self);
-						$self->_error ($res->[1], @$req, $res->[2]) # error, request record, is_fatal
-							if $self; # cb() could have deleted it
+						{
+							local $@ = $res->[1];
+							$@ =~ s{\n$}{};
+							$cb->($self);
+						}
 					}
 					
 					# no more queued requests, so become idle
@@ -176,12 +214,14 @@ sub new {
 						if $self && !@{ $self->{queue} };
 				}
 			
-			} elsif (defined $len) {
+			}
+			elsif (defined $len) {
 				# todo, caller?
 				$self->_error ("unexpected eof", @caller, 1);
-			} elsif ($! != Errno::EAGAIN) {
+			}
+			elsif ($! != Errno::EAGAIN) {
 				# todo, caller?
-				$self->_error ("read error: $!", @caller, 1);
+				$self->_error ("read error ".(0+$!).": $!", @caller, 1);
 			}
 		});
 		
@@ -225,18 +265,29 @@ sub new {
 	}
 	elsif (defined $pid) {
 		# child
+		$SIG{INT} = 'IGNORE';
+		my $serv_fno = fileno $server;
+		
+		($_ != $serv_fno) && POSIX::close $_ for $^F+1..$FD_MAX;
+		
 		if (ref $cb eq 'CODE'){
 			$WORKER = $cb;
 		}
 		elsif ( ref $cb eq 'ARRAY') {
 			my ( $class,@args ) = @$cb;
-			eval qq{ use $class; 1 } or die $@ unless $class->can('new');
+			eval qq{ use $class; 1 } or croak($@) unless $class->can('new');
 			$WORKER = $class->new(@args);
 		}
-		my $serv_fno = fileno $server;
+		elsif ( ref $cb eq 'HASH') {
+			my $class = $cb->{class} or croak "You should define class to construct";
+			my $new = $cb->{new} || 'new';
+			eval qq{ use $class; 1 } or croak($@) unless $class->can($new);
+			$WORKER = $class->$new(@{ $cb->{args} || [] });
+		}
+		else {
+			croak "Bad argument: $cb";
+		}
 		
-		($_ != $serv_fno) && POSIX::close $_
-			for $^F+1..$FD_MAX;
 		serve_fh $server, $VERSION;
 		
 		# no other way on the broken windows platform, even this leaks
@@ -257,46 +308,69 @@ sub _server_pid {
 	shift->{child_pid}
 }
 
+our %KIDW;
 our %TERM;
 
 sub kill_child {
 	my $self      = shift;
 	my $child_pid = delete $self->{child_pid};
-	#print STDERR "killing $child_pid\n";
+	my $GD = 0;
+	{
+		local $SIG{__WARN__} = sub { $GD = 1 if $_[0] =~ / during global destruction\.\s*$/ };
+		warn 'test';
+	}
+	#print STDERR "killing $child_pid / $GD\n";
 	if ($child_pid) {
 		# send SIGKILL in two seconds
 		$TERM{$child_pid}++;
-		# TODO: kill timer
-		my $murder_timer = AnyEvent->timer (
-			after => 2,
-			cb    => sub {
-				kill 9, $child_pid
-					and delete $TERM{$child_pid};
-			},
-		);
+		kill 0 => $child_pid and
+		kill TERM => $child_pid or $!{ESRCH} or warn "kill $child_pid: $!";
+		return if $GD;
+		# MAYBE: kill timer
+		#my $murder_timer = AnyEvent->timer (
+		#	after => 2,
+		#	cb    => sub {
+		#		kill 9, $child_pid
+		#			and delete $TERM{$child_pid};
+		#	},
+		#);
 		
 		# reap process
-		my $kid_watcher; $kid_watcher = AnyEvent->child (
+		#print STDERR "start reaper $child_pid\n";
+		$KIDW{$child_pid} = AnyEvent->child (
 			pid => $child_pid,
 			cb  => sub {
 				# just hold on to this so it won't go away
+				#print STDERR "reaped $child_pid\n";
 				delete $TERM{$child_pid};
-				undef $kid_watcher;
+				delete $KIDW{$child_pid};
 				# cancel SIGKILL
-				undef $murder_timer;
+				#undef $murder_timer;
 			},
 		);
 		
 		close $self->{fh};
 	}
 }
-
 sub END {
-	for (keys %TERM) {
-		#print STDERR "END: kill $_\n";
-		# TODO: waitpid
-		kill KILL => $_ or warn "kill $_ failed: $!";
+	my $GD = 0;
+	{
+		local $SIG{__WARN__} = sub { $GD = 1 if $_[0] =~ / during global destruction\.\s*$/ };
+		warn 'test';
 	}
+	#print STDERR "END $!/$? GD=$GD\n";
+	for (keys %TERM) {
+		delete $KIDW{$_};
+		#print STDERR "END kill $_\n";
+		kill 0 => $_ and do {
+			kill KILL => $_ or warn "kill $_ failed: $!";
+			#print STDERR "END waitpid $_\n";
+			my $wp = waitpid $_,0;
+			#print STDERR "END waitpid $_ = $wp\n";
+		};
+		#print STDERR "END $_ ($!/$?/${^CHILD_ERROR_NATIVE})\n";
+	}
+	undef $!;undef $?;
 }
 
 sub DESTROY {
@@ -305,6 +379,8 @@ sub DESTROY {
 
 sub _error {
 	my ($self, $error, $filename, $line, $fatal) = @_;
+	my $caller = '';
+	my @caller = ($filename,$line);
 	if ($fatal) {
 		delete $self->{tw};
 		delete $self->{rw};
@@ -313,7 +389,9 @@ sub _error {
 		
 		# for fatal errors call all enqueued callbacks with error
 		while (my $req = shift @{$self->{queue}}) {
-			local $@ = $error;
+			@caller = ($req->[1],$req->[2]) unless $caller;
+			$caller ||= " after $req->[1] line $req->[2],";
+			local $@ = "$error at $req->[1] line $req->[2].\n";
 			$req->[0]->($self);
 		}
 		$self->kill_child;
@@ -322,9 +400,15 @@ sub _error {
 	local $@ = $error;
 	
 	if ($self->{on_error}) {
-		$self->{on_error}($self, $filename, $line, $fatal)
-	} else {
-		die "$error at $filename, line $line\n";
+		$self->{on_error}($self, $error, $fatal, @caller);
+	}
+	else {
+		my $e = "$error$caller";
+		if ($fatal) {
+			die "$e at $filename, line $line\n";
+		} else {
+			warn "$e at $filename, line $line\n";
+		}
 	}
 }
 
@@ -396,14 +480,13 @@ sub do {
 
 =head1 AUTHOR
 
-Mons Anderson, C<< <mons at cpan.org> >>
+Mons Anderson, C<< <mons@cpan.org> >>
 
-=head1 COPYRIGHT & LICENSE
+=head1 ACKNOWLEDGEMENTS
 
-Copyright 2009 Mons Anderson, all rights reserved.
+This module based on Marc Lehmann's L<AnyEvent::DBI>
 
-This program is free software; you can redistribute it and/or modify it
-under the same terms as Perl itself.
+Thanks to Vladimir Timofeev C<< <vovkasm@cpan.org> >> for bugfixes and useful notes
 
 =cut
 

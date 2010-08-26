@@ -1,52 +1,75 @@
-AnyEvent-Worker
+NAME
+    AnyEvent::Worker - Manage blocking task in external process
 
-The README is used to introduce the module and provide instructions on
-how to install the module, any machine dependencies it may have (for
-example C compilers and installed libraries) and any other information
-that should be provided before the module is installed.
+SYNOPSIS
+        use AnyEvent 5;
+        use AnyEvent::Worker;
+    
+        my $worker1 = AnyEvent::Worker->new( [ 'Actual::Worker::Class' => @init_args ] );
+        my $worker2 = AnyEvent::Worker->new( sub { return "Cb 1 @_"; } );
+        my $worker3 = AnyEvent::Worker->new( {
+            class   => 'Actual::Worker::Class2',
+            new     => 'create', # alternative constructor
+            args    => [qw(arg1 arg2)],
+        } );
+    
+        # Invoke method `test' on Actual::Worker::Class with arguments @args
+        $worker1->do( test => @args , sub {
+            return warn "Request died: $@" if $@;
+            warn "Received response: @_";
+        });
+    
+        # Just call callback, passed to worker2 with arguments @args
+        $worker2->do( @args , sub {
+            return warn "Request died: $@" if $@;
+            warn "Received response: @_";
+        });
 
-A README file is required for CPAN modules since CPAN extracts the README
-file from a module distribution so that people browsing the archive
-can use it to get an idea of the module's uses. It is usually a good idea
-to provide version information here so that people can decide whether
-fixes for the module are worth downloading.
+CONSTRUCTOR
+  new $cb->($req), %args
+    Simple stateless worker. On any "do" a sub sill be invoked with "do"
+    arguments
 
+  new [ Class => @new_args ], %args
+    Stateful, object-based worker. After fork, Class will we "use"d, then
+    instantiated with new(@new_args).
 
-INSTALLATION
+    First argument to "do" will be interpreted as object method, rest -- as
+    method arguments.
 
-To install this module, run the following commands:
+  new { class => 'Class', args => \@new_args, new => 'constructor_method' }, %args
+    Same as previous, but allow to pass optional constructor name in "new"
+    arg
 
-	perl Makefile.PL
-	make
-	make test
-	make install
+  $args{on_error} = $cb->($worker,$error,$fatal,$file,$line)
+    When an unexpected error occurs (for ex: child process exited or killed)
+    "on_error" callback will be invoked
 
-SUPPORT AND DOCUMENTATION
+METHODS
+  do @args, $cb->($res)
+    Only for stateless worker.
 
-After installing, you can find documentation for this module with the
-perldoc command.
+  do method => @args, $cb->($res)
+    Only for stateful worker.
 
-    perldoc AnyEvent::Worker
+METHODS
+    $worker->on_error ($cb->($worker, $filename, $line, $fatal))
+        Sets (or clears, with "undef") the "on_error" handler.
 
-You can also look for information at:
+    $worker->timeout ($seconds)
+        Sets (or clears, with "undef") the database timeout. Useful to
+        extend the timeout when you are about to make a really long query.
 
-    RT, CPAN's request tracker
-        http://rt.cpan.org/NoAuth/Bugs.html?Dist=AnyEvent-Worker
+    $worker->do ( @args, $cb->( $worker, @response ) )
+        Executes worker code and execure the callback, when response is
+        ready
 
-    AnnoCPAN, Annotated CPAN documentation
-        http://annocpan.org/dist/AnyEvent-Worker
+AUTHOR
+    Mons Anderson, "<mons@cpan.org>"
 
-    CPAN Ratings
-        http://cpanratings.perl.org/d/AnyEvent-Worker
+ACKNOWLEDGEMENTS
+    This module based on Marc Lehmann's AnyEvent::DBI
 
-    Search CPAN
-        http://search.cpan.org/dist/AnyEvent-Worker/
-
-
-COPYRIGHT AND LICENCE
-
-Copyright (C) 2009 Mons Anderson
-
-This program is free software; you can redistribute it and/or modify it
-under the same terms as Perl itself.
+    Thanks to Vladimir Timofeev "<vovkasm@cpan.org>" for bugfixes and useful
+    notes
 

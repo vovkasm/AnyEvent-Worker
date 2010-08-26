@@ -6,11 +6,17 @@ sub new {my $pkg = shift;my $self = bless { @_ },$pkg;}
 sub test {my $self = shift;return "Result from $self->{some}: @_";}
 sub fail {my $self = shift;die "Fail from $self->{some}: @_";}
 
+package t::ActualWorker2;
+
+sub create {my $pkg = shift;my $self = bless { @_ },$pkg;}
+sub test {my $self = shift;return "Result from $self->{some}: @_";}
+
 package main;
 
 use lib::abs "../lib";
-use Test::NoWarnings ();
-use Test::More;
+use Test::NoWarnings;
+use Test::More tests => 10+1;
+use AnyEvent::Impl::Perl;
 use AnyEvent 5;
 use AnyEvent::Worker;
 use AnyEvent::Util(); 
@@ -18,6 +24,11 @@ use AnyEvent::Util();
 my $worker1 = AnyEvent::Worker->new( [ t::ActualWorker => some => 'object' ] );
 my $worker2 = AnyEvent::Worker->new( sub { return "Cb 1 @_"; } );
 my $worker3 = AnyEvent::Worker->new( sub { die    "Cb 2 @_"; } );
+my $worker4 = AnyEvent::Worker->new( {
+        class => "t::ActualWorker2",
+        new   => 'create',
+        args  => [some => 'object'],
+    } );
 
 my $cv = AE::cv;
 
@@ -56,8 +67,15 @@ $worker3->do( "FailData" , sub {
 	is_deeply \@_, [], 'w3: response';
 });
 
+$cv->begin;
+$worker4->do( test => "SomeData" , sub {
+	shift;
+	AnyEvent::Util::guard { $cv->end; };
+	is $@, '', 'test: no error';
+	is_deeply \@_, ['Result from object: SomeData'], 'test: response';
+});
+
 $cv->recv;
 
-Test::NoWarnings::had_no_warnings;
-
-done_testing( 9 );
+#Test::NoWarnings::had_no_warnings;
+#done_testing( 11 );

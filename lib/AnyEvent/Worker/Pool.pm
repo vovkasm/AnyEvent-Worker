@@ -5,13 +5,43 @@ use warnings;
 use strict;
 }x;
 
+our $VERSION = '0.02';
 use AnyEvent::Worker;
+
+=head1 NAME
+
+AnyEvent::Worker::Pool - Easily create a pool of workers and use'em like a single worker
+
+=head1 SYNOPSIS
+
+    use AnyEvent 5;
+    use AnyEvent::Worker::Pool;
+    
+    # Create a pool of 2 workers
+    my $workers = AnyEvent::Worker::Pool->new( 2, @common_worker_init_args );
+
+    # Will be run instantly (left 1 idle worker)
+    $workers->do( @common_worker_do_args );
+    
+    # Will be run instantly (left 0 idle workers)
+    $workers->do( @common_worker_do_args );
+    
+    # Will be run after one of busy worker will get free
+    $workers->do( @common_worker_do_args );
+
+    $workers->take_worker(sub {
+        my $worker = shift;
+        $worker->do(@args, sub {
+            $workers>ret_worker($worker);
+        });
+    });
+    
+=cut
 
 sub new {
 	my $pkg = shift;
 	my $count = shift;
-	my @args = @_;
-	my $self = bless { @_ }, $pkg;
+	my $self = bless {}, $pkg;
 	$self->{pool} = [
 		map { AnyEvent::Worker->new(@_) } 1..$count
 	];
@@ -51,4 +81,17 @@ sub ret_worker {
 	$self->take_worker(shift @{ $self->{waiting_db} }) if @{ $self->{waiting_db} };
 }
 
-1;
+=head1 AUTHOR
+
+Mons Anderson, C<< <mons@cpan.org> >>
+
+=head1 COPYRIGHT & LICENSE
+
+Copyright 2009 Mons Anderson.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+=cut
+
+1; # End of AnyEvent::Worker::Pool

@@ -6,9 +6,9 @@ use Test::Dist;
 use Test::NoWarnings;
 chdir lib::abs::path('..');
 
-dist_ok(
+Test::Dist::dist_ok(
 	'+' => 1,
-	skip => [qw(prereq)],
+	skip => [qw(prereq podcover)],
 	kwalitee => {
 		req => [qw( has_separate_license_file has_example
 		metayml_has_provides metayml_declares_perl_version
